@@ -1,0 +1,206 @@
+#include <NewPing.h>
+#include <SD.h>
+#include <DFRobot_DS1307.h>
+
+DFRobot_DS1307 aclock;
+
+#define trigpin 5
+#define echopin 6
+
+const int CSPin = 10;
+const int lightpin = A1;
+const int temppin = A2;
+const int soilpin = A0;
+const int pump = 3;
+const int soilpower = 7;
+const int bugfix = 8;
+const int button = 9;
+
+float soildata;
+float lightdata;
+float sonicval;
+float tempdata;
+
+unsigned long currentHour = 0;
+unsigned long lastwaterdow = 0;
+unsigned long lastwaterdate = 0;
+unsigned long prevprint = 0;
+long currentDay;
+long currentDate;
+int prevhour = 0;
+
+unsigned int lineswritten = 0;
+
+NewPing distance(trigpin, echopin, 50);
+
+File plantdata;
+
+void setup() {
+  Serial.begin(9600);
+  
+  pinMode(lightpin, INPUT);
+  pinMode(temppin, INPUT);
+  pinMode(soilpin, INPUT);
+  pinMode(CSPin, OUTPUT);
+  pinMode(pump, OUTPUT);
+  pinMode(soilpower, OUTPUT);
+  pinMode(bugfix,OUTPUT);
+
+  digitalWrite(bugfix, LOW);
+                                      
+  if (!SD.begin(CSPin)) {
+    Serial.println("Something is broken.");
+    digitalWrite(bugfix, HIGH);
+    return; }
+  Serial.println("Done.");
+
+  while( !(aclock.begin()) ){
+    Serial.println("Communication with device failed, please check connection");
+    delay(3000);}
+  Serial.println("Begin ok!");
+  aclock.start();
+  aclock.setSqwPinMode(aclock.eSquareWave_1Hz);
+}
+
+
+void loop() {
+  if(digitalRead(button) == 1) {
+    waterit();
+  }
+  
+  uint16_t getTimeBuff[7] = {0};
+  aclock.getTime(getTimeBuff);
+  char outputarr[128];
+  sprintf(outputarr, "%d/%d/%d-%d %d:%d:%d\r\n",
+      getTimeBuff[6],
+      getTimeBuff[5],
+      getTimeBuff[4],
+      getTimeBuff[3],
+      getTimeBuff[2],
+      getTimeBuff[1],
+      getTimeBuff[0]
+      );
+  currentHour = getTimeBuff[2];
+  currentDay = getTimeBuff[3];
+  currentDate = getTimeBuff[4];
+  
+  String input = Serial.readString();
+
+  if (currentHour != prevprint) {
+    Serial.print(outputarr);
+    
+    plantdata = SD.open("data.txt", FILE_WRITE);
+
+    delay(10);
+    digitalWrite(soilpower, HIGH);    
+    lightdata = LightConversion(analogRead(lightpin));
+    tempdata = analogRead(temppin);
+    soildata = ReadSoil(analogRead(soilpin));
+    sonicval = distance.ping_cm();
+    
+    if (plantdata) {
+      lineswritten ++;
+
+      //number, light, temperature, moisture, ultrasonic, time
+      plantdata.print(lineswritten); plantdata.print(", ");
+      plantdata.print(lightdata); plantdata.print(", ");
+      plantdata.print(tempdata); plantdata.print(", ");      
+      plantdata.print(soildata); plantdata.print(", ");
+      plantdata.print(sonicval); plantdata.print(", ");
+      plantdata.print(outputarr);
+
+
+      Serial.print(lineswritten);
+      Serial.print(", ");
+
+      plantdata.close();
+      digitalWrite(bugfix, LOW);
+
+    } else{Serial.print("problem");
+      digitalWrite(bugfix, HIGH);
+      }
+  
+    prevprint = currentHour;
+    delay(10);
+    digitalWrite(soilpower, LOW);
+
+    //watering when soil moisture below 10
+    if (soildata < 11) {
+      waterit();
+    } else if(currentDay == lastwaterdow - 2) {
+      waterit();
+    } else if (currentDay == lastwaterdow + 5){
+      waterit();
+    }
+  
+  }
+  if (input.length() > 1) {
+    if (input.startsWith("/read")) {
+      readfromcard();
+    } else if (input.startsWith("/clear")) {
+      clearcard();
+    }
+  }
+}
+
+
+void writetocard(String input) {
+  plantdata = SD.open("data.txt", FILE_WRITE);
+
+  if(plantdata) {
+    Serial.print(input);  
+    plantdata.println(input);
+
+    plantdata.close();
+    digitalWrite(bugfix, LOW);
+  }else {
+    Serial.println("didnt work");
+    digitalWrite(bugfix, HIGH);
+  }
+}
+
+
+void readfromcard() {
+  plantdata = SD.open("data.txt");
+
+  if (plantdata) {
+    Serial.println("Read from data.txt:");
+
+    while (plantdata.available()) {
+      Serial.write(plantdata.read());
+    }
+    plantdata.close();
+    digitalWrite(bugfix, LOW);
+  } else {
+    Serial.println("Error. Cannot open");
+    digitalWrite(bugfix, HIGH);
+  }}
+
+
+void clearcard() {
+  Serial.print("Clearing... ");
+  SD.remove("data.txt");
+  Serial.println("Done");
+}
+
+
+float LightConversion(float val) {
+  float voltage =  (float)val * 5 / 1023;
+  return voltage * 1000;
+}
+
+
+float ReadSoil(float val) {
+  float moisture = val/5.5;
+  return moisture;
+}
+
+void waterit() {
+  Serial.print("watering... ");
+  digitalWrite(pump, HIGH);
+  delay(2500);
+  digitalWrite(pump, LOW);
+  Serial.println("done");
+  lastwaterdow = currentDay;
+  lastwaterdate = currentDate;
+}
